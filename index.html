@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Parking P1 - Tableau de bord</title>
+  <script src="https://unpkg.com/mqtt/dist/mqtt.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root { --bleu: #1f3a5f; --vert: #16a34a; --orange: #ea580c; --rouge: #dc2626; --gris: #64748b; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; margin: 0; background: #f1f5f9; color: #0f172a; }
+    header { background: var(--bleu); color: #fff; padding: 14px 24px; display: flex;
+             justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
+    header h2 { margin: 0; font-size: 20px; }
+    .etat { padding: 4px 12px; border-radius: 999px; font-size: 13px; background: var(--gris); }
+    .etat.ok { background: var(--vert); } .etat.ko { background: var(--rouge); }
+    main { max-width: 1200px; margin: 20px auto; padding: 0 16px; }
+    .grille { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+    .carte { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px #0002; }
+    .carte h3 { margin: 0 0 10px; font-size: 15px; color: var(--gris); font-weight: 600; }
+    .grand { font-size: 34px; font-weight: 700; }
+    .petit { font-size: 13px; color: var(--gris); }
+    .ligne { display: flex; justify-content: space-between; padding: 4px 0; border-bottom: 1px solid #f1f5f9; }
+    .jauge { height: 18px; background: #e2e8f0; border-radius: 9px; overflow: hidden; margin-top: 8px; }
+    .jauge div { height: 100%; width: 0; background: var(--vert); transition: width .4s, background .4s; }
+    .banniere { display: none; border-radius: 12px; padding: 14px 18px; margin-bottom: 16px;
+                font-weight: 700; color: #fff; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+    .banniere.visible { display: flex; }
+    #banComplet { background: var(--orange); }
+    #banAlarme { background: var(--rouge); animation: clign 1s infinite; }
+    #banAlarme button { background: #fff; color: var(--rouge); }
+    @keyframes clign { 50% { opacity: .7; } }
+    body.alarme { background: #fee2e2; }
+    body.alarme header { background: var(--rouge); }
+    .pastille { display: inline-block; padding: 2px 10px; border-radius: 999px; font-size: 13px; color: #fff; background: var(--gris); }
+    .pastille.v { background: var(--vert); } .pastille.o { background: var(--orange); } .pastille.r { background: var(--rouge); }
+    .vehicule { font-size: 30px; opacity: .2; }
+    .vehicule.la { opacity: 1; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    td, th { padding: 6px; border-bottom: 1px solid #e2e8f0; text-align: left; }
+    th { color: var(--gris); font-weight: 600; }
+    .defile { max-height: 300px; overflow-y: auto; }
+    button { padding: 8px 12px; border: 0; border-radius: 8px; background: var(--bleu); color: #fff; cursor: pointer; }
+    button.danger { background: var(--rouge); }
+    .commandes { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+    .commandes label { font-size: 13px; color: var(--gris); }
+    input { padding: 7px 8px; border: 1px solid #cbd5e1; border-radius: 8px; width: 80px; }
+    .erreur { color: var(--rouge); font-size: 13px; min-height: 16px; }
+    canvas { max-height: 220px; }
+  </style>
+</head>
+<body>
+<header>
+  <h2>Parking P1 – exploitation</h2>
+  <div>Broker : <span id="broker" class="etat">connexion...</span>
+       Parking : <span id="station" class="etat">?</span></div>
+</header>
+<main>
+  <div class="banniere" id="banAlarme">
+    <span id="banAlarmeTexte">ALARME</span>
+    <button onclick="cmd('acquitter')">Acquitter</button>
+  </div>
+  <div class="banniere" id="banComplet">PARKING COMPLET</div>
+
+  <!-- Indicateurs principaux -->
+  <div class="grille">
+    <div class="carte">
+      <h3>Occupation</h3>
+      <div class="grand"><span id="presents">--</span> / <span id="capacite">--</span></div>
+      <div class="petit">véhicules présents / capacité</div>
+      <div class="jauge"><div id="jauge"></div></div>
+      <div class="petit" style="margin-top:6px">Taux : <b id="taux">--</b> % · pic du jour <span id="tauxMax">--</span> %</div>
+    </div>
+    <div class="carte">
+      <h3>Places libres</h3>
+      <div class="grand" id="libres">--</div>
+      <div class="petit">Mode : <span id="mode" class="pastille">--</span></div>
+      <div class="petit" style="margin-top:6px">Flux : <b id="flux">--</b> entrées sur la dernière heure</div>
+    </div>
+    <div class="carte">
+      <h3>Accès</h3>
+      <div class="ligne"><span><span id="vehE" class="vehicule">🚗</span> Entrée</span>
+        <span><span id="distE">--</span> cm · <span id="barE" class="pastille">--</span></span></div>
+      <div class="ligne"><span><span id="vehS" class="vehicule">🚗</span> Sortie</span>
+        <span><span id="distS">--</span> cm · <span id="barS" class="pastille">--</span></span></div>
+    </div>
+    <div class="carte">
+      <h3>Sécurité</h3>
+      <div class="ligne"><span>Incendie</span><span id="incendie" class="pastille">--</span></div>
+      <div class="ligne"><span>Température</span><b id="temp">--</b></div>
+      <div class="ligne"><span>Monoxyde de carbone</span><span id="co" class="pastille">--</span></div>
+      <div class="ligne"><span>Ventilation</span><span id="ventil" class="pastille">--</span></div>
+    </div>
+  </div>
+
+  <!-- Paiement et exploitation -->
+  <div class="grille" style="margin-top:16px">
+    <div class="carte">
+      <h3>Paiement (journée)</h3>
+      <div class="grand"><span id="recette">--</span> <small>CDF</small></div>
+      <div class="ligne"><span>Entrées / sorties</span><b><span id="entrees">--</span> / <span id="sorties">--</span></b></div>
+      <div class="ligne"><span>Durée moyenne</span><b><span id="dureeMoy">--</span> min</b></div>
+      <div class="ligne"><span>Plus long stationnement</span><b><span id="dureeMax">--</span> min</b></div>
+      <div class="ligne"><span>Codes invalides</span><b id="invalides">--</b></div>
+      <div class="ligne"><span>Tarif</span><b><span id="tarif">--</span> CDF / <span id="unite">--</span> s</b></div>
+    </div>
+    <div class="carte">
+      <h3>Dernière sortie</h3>
+      <div id="derniereSortie" class="petit">Aucune sortie pour l'instant</div>
+    </div>
+    <div class="carte" style="grid-column: span 2; min-width: 0">
+      <h3>Reçus en cours (<span id="nbRecus">0</span>)</h3>
+      <div class="defile">
+        <table><thead><tr><th>Reçu</th><th>Entrée</th><th>Durée</th><th>Montant</th></tr></thead>
+        <tbody id="recus"></tbody></table>
+      </div>
+    </div>
+  </div>
+
+  <!-- Graphiques -->
+  <div class="grille" style="margin-top:16px">
+    <div class="carte"><h3>Taux d'occupation (%)</h3><canvas id="gTaux"></canvas></div>
+    <div class="carte"><h3>Recette cumulée (CDF)</h3><canvas id="gRecette"></canvas></div>
+    <div class="carte"><h3>CO (ppm)</h3><canvas id="gCo"></canvas></div>
+  </div>
+
+  <!-- Commandes et journal -->
+  <div class="grille" style="margin-top:16px">
+    <div class="carte">
+      <h3>Commandes</h3>
+      <div class="commandes">
+        <button onclick="cmd('barriere_entree=ouvrir')">Ouvrir entrée</button>
+        <button onclick="cmd('barriere_sortie=ouvrir')">Ouvrir sortie</button>
+        <button onclick="cmd('mode=ferme')">Fermer le parking</button>
+        <button onclick="cmd('mode=ouvert')">Ouvrir le parking</button>
+      </div>
+      <div class="commandes" style="margin-top:10px">
+        <label>Capacité <input id="inCapacite" type="number" min="1" max="200" value="120"></label>
+        <label>Tarif <input id="inTarif" type="number" min="0" value="10"></label>
+        <label>Unité (s) <input id="inUnite" type="number" min="1" value="60"></label>
+        <label>Seuil CO <input id="inSeuilCo" type="number" min="31" value="100"></label>
+        <button onclick="envoyerReglages()">Appliquer</button>
+      </div>
+      <div id="erreurReglages" class="erreur"></div>
+      <div class="commandes">
+        <button class="danger" onclick="cmd('acquitter')">Acquitter</button>
+        <button class="danger" onclick="cmd('test_alarme')">Tester l'alarme</button>
+        <button onclick="if (confirm('Remettre à zéro les compteurs du jour ?')) cmd('reset_jour')">Remise à zéro du jour</button>
+      </div>
+    </div>
+    <div class="carte" style="grid-column: span 2; min-width: 0">
+      <h3>Journal des événements (20 derniers)</h3>
+      <div class="defile">
+        <table><thead><tr><th>Heure</th><th>Événement</th><th>Détail</th></tr></thead>
+        <tbody id="journal"></tbody></table>
+      </div>
+    </div>
+  </div>
+</main>
+<script>
+  // ---------- Paramètres EMQX Cloud (à remplacer) ----------
+  const BROKER_URL = "wss://x666feb9.ala.eu-central-1.emqxsl.com:8084/mqtt";
+  const USER = "web-dashboard";          // idéalement "parking-exploitant" (Q7)
+  const PASS = "MotDePasseWeb!";
+  const BASE = "unh/parking/p1/";
+
+  const $ = id => document.getElementById(id);
+  const heure = () => new Date().toLocaleTimeString("fr-FR");
+  let tarif = 10, uniteS = 60;
+  const recus = {};                      // code -> { heure_entree, epoch }
+
+  // ---------- Graphiques ----------
+  const opts = (extra = {}) => ({ animation: false, parsing: false, plugins: { legend: { display: false } },
+    scales: { x: { type: "linear", ticks: { callback: v => new Date(v).toLocaleTimeString("fr-FR"), maxTicksLimit: 6 } }, ...extra } });
+  const ligne = (couleur, pointilles) => ({ data: [], borderColor: couleur, pointRadius: 0, stepped: !pointilles,
+    borderDash: pointilles ? [6, 4] : [], borderWidth: pointilles ? 1.5 : 2 });
+  const gTaux = new Chart($("gTaux"), { type: "line", data: { datasets: [ligne("#1f3a5f")] },
+    options: opts({ y: { min: 0, max: 100 } }) });
+  const gRecette = new Chart($("gRecette"), { type: "line", data: { datasets: [ligne("#16a34a")] },
+    options: opts({ y: { beginAtZero: true } }) });
+  const gCo = new Chart($("gCo"), { type: "line",
+    data: { datasets: [ligne("#0f172a"), { ...ligne("#ea580c", true), label: "30 ppm" }, { ...ligne("#dc2626", true), label: "100 ppm" }] },
+    options: opts({ y: { min: 0, max: 300 } }) });
+  let seuilCo = 100;
+
+  function ajouter(g, i, y) {
+    const d = g.data.datasets[i].data;
+    d.push({ x: Date.now(), y });
+    while (d.length > 2 && d[0].x < Date.now() - 24 * 3600 * 1000) d.shift();   // la journée
+  }
+  function prolonger(g) {   // tracé en escalier jusqu'à "maintenant"
+    const t = Date.now();
+    g.data.datasets.forEach(ds => { const d = ds.data; if (d.length && d[d.length - 1].prolonge) d.pop();
+      if (d.length) d.push({ x: t, y: d[d.length - 1].y, prolonge: true }); });
+    g.update();
+  }
+  function lignesSeuilCo() {
+    const t0 = gCo.data.datasets[0].data.length ? gCo.data.datasets[0].data[0].x : Date.now() - 60000;
+    gCo.data.datasets[1].data = [{ x: t0, y: 30 }, { x: Date.now(), y: 30 }];
+    gCo.data.datasets[2].data = [{ x: t0, y: seuilCo }, { x: Date.now(), y: seuilCo }];
+  }
+
+  // ---------- Affichage ----------
+  const pastille = (id, txt, classe) => { const e = $(id); e.textContent = txt; e.className = "pastille " + (classe || ""); };
+  const etat = (id, txt, ok) => { const e = $(id); e.textContent = txt; e.className = "etat " + (ok ? "ok" : "ko"); };
+  const dureeTxt = s => s >= 3600 ? Math.floor(s / 3600) + " h " + String(Math.floor(s / 60) % 60).padStart(2, "0") + " min"
+                                   : Math.floor(s / 60) + " min " + String(s % 60).padStart(2, "0") + " s";
+  // 48213907 -> 48••••07 ; code de démonstration 1234 -> 1••4
+  const masquer = c => c.length === 8 ? c.slice(0, 2) + "••••" + c.slice(6) : c[0] + "••" + c.slice(-1);
+
+  function occupation(d) {
+    $("presents").textContent = d.presents; $("capacite").textContent = d.capacite;
+    $("libres").textContent = d.libres; $("taux").textContent = d.taux.toFixed(1);
+    const j = $("jauge"); j.style.width = Math.min(100, d.taux) + "%";
+    j.style.background = d.taux > 95 ? "var(--rouge)" : d.taux >= 80 ? "var(--orange)" : "var(--vert)";
+    $("banComplet").classList.toggle("visible", d.complet);
+    ajouter(gTaux, 0, d.taux); prolonger(gTaux);
+  }
+
+  function acces(d) {
+    $("vehE").classList.toggle("la", d.vehicule_entree); $("vehS").classList.toggle("la", d.vehicule_sortie);
+    $("distE").textContent = d.dist_entree; $("distS").textContent = d.dist_sortie;
+    const cls = b => b === "ouverte" ? "v" : b === "bloquee" ? "r" : "";
+    pastille("barE", d.barriere_entree, cls(d.barriere_entree));
+    pastille("barS", d.barriere_sortie, cls(d.barriere_sortie));
+    pastille("mode", d.mode, { ouvert: "v", complet: "o", ferme: "r", evacuation: "r" }[d.mode]);
+  }
+
+  function securite(d) {
+    pastille("incendie", d.incendie ? "INCENDIE" : (d.flamme ? "flamme" : "non"), d.incendie ? "r" : "v");
+    $("temp").textContent = d.temp.toFixed(1) + " °C";
+    pastille("co", d.co_ppm + " ppm", d.co_ppm >= seuilCo ? "r" : d.co_ppm >= 30 ? "o" : "v");
+    pastille("ventil", d.ventilation, { normale: "v", renforcee: "o", evacuation: "r" }[d.ventilation]);
+    ajouter(gCo, 0, d.co_ppm); lignesSeuilCo(); prolonger(gCo);
+  }
+
+  function stats(d) {
+    tarif = d.tarif; uniteS = d.unite_s;
+    $("recette").textContent = d.recette_jour.toLocaleString("fr-FR");
+    $("entrees").textContent = d.entrees_jour; $("sorties").textContent = d.sorties_jour;
+    $("dureeMoy").textContent = d.duree_moy_min; $("dureeMax").textContent = d.duree_max_min;
+    $("invalides").textContent = d.codes_invalides_jour; $("flux").textContent = d.flux_heure;
+    $("tauxMax").textContent = d.taux_max_jour.toFixed(1);
+    $("tarif").textContent = d.tarif; $("unite").textContent = d.unite_s;
+    ajouter(gRecette, 0, d.recette_jour); prolonger(gRecette);
+  }
+
+  function alarme(d) {
+    const active = d.alarme !== "aucune";
+    $("banAlarme").classList.toggle("visible", active);
+    // Toute la page passe en mode alarme pour un incendie, jusqu'à l'acquittement
+    document.body.classList.toggle("alarme", d.alarme === "incendie" && !d.acquittee);
+    if (active) $("banAlarmeTexte").textContent = "ALARME " + d.alarme.toUpperCase() +
+      (d.depuis ? " depuis " + d.depuis : "") + (d.acquittee ? " (acquittée)" : "");
+  }
+
+  const libelles = { entree: "Entrée", sortie: "Sortie payée", code_invalide: "Code invalide", assistance: "Assistance",
+                     alarme: "Alarme", test_alarme: "Test d'alarme", commande_refusee: "Commande refusée", commande_inconnue: "Commande inconnue" };
+  function evenement(d) {
+    let detail = "";
+    if (d.type === "entree") detail = "reçu " + masquer(d.recu) + " à " + d.heure_entree;
+    else if (d.type === "sortie") {
+      detail = "reçu " + masquer(d.recu) + " · " + dureeTxt(d.duree_s) + " · " + d.montant + " " + d.devise;
+      $("derniereSortie").innerHTML = "<div class='grand'>" + d.montant + " <small>CDF</small></div>" +
+        "<div class='ligne'><span>Reçu</span><b>" + masquer(d.recu) + "</b></div>" +
+        "<div class='ligne'><span>Entrée → sortie</span><b>" + d.heure_entree + " → " + d.heure_sortie + "</b></div>" +
+        "<div class='ligne'><span>Durée</span><b>" + dureeTxt(d.duree_s) + "</b></div>" +
+        "<div class='ligne'><span>Unités</span><b>" + d.unites + "</b></div>";
+    } else if (d.type === "code_invalide") detail = "essai " + d.essai;
+    else if (d.type === "alarme") detail = d.alarme + " à " + d.heure;
+    else if (d.type === "commande_refusee") detail = d.commande + " (" + d.raison + ")";
+    else detail = d.raison || d.commande || "";
+    const tb = $("journal");
+    tb.insertAdjacentHTML("afterbegin", "<tr><td>" + heure() + "</td><td>" + (libelles[d.type] || d.type) + "</td><td>" + detail + "</td></tr>");
+    while (tb.rows.length > 20) tb.deleteRow(-1);
+  }
+
+  // Reçus en cours : durée et montant recalculés chaque seconde
+  function majRecus() {
+    const codes = Object.keys(recus).sort((a, b) => recus[a].epoch - recus[b].epoch);
+    $("nbRecus").textContent = codes.length;
+    const maintenant = Date.now() / 1000;
+    $("recus").innerHTML = codes.map(c => {
+      const r = recus[c];
+      const s = r.epoch > 0 ? Math.max(0, Math.floor(maintenant - r.epoch)) : null;
+      const montant = s === null ? "?" : Math.max(1, Math.ceil(s / uniteS)) * tarif;
+      return "<tr><td>" + masquer(c) + "</td><td>" + r.heure_entree + "</td><td>" + (s === null ? "?" : dureeTxt(s)) +
+             "</td><td>" + montant + " CDF</td></tr>";
+    }).join("");
+  }
+  setInterval(majRecus, 1000);
+  setInterval(() => { [gTaux, gRecette].forEach(prolonger); lignesSeuilCo(); prolonger(gCo); }, 5000);
+
+  // ---------- MQTT ----------
+  // Sans Internet, la bibliothèque MQTT.js (unpkg.com) ne se charge pas : on le dit clairement.
+  if (typeof mqtt === "undefined") {
+    etat("broker", "MQTT.js non chargé : vérifiez Internet", false);
+    throw new Error("MQTT.js non chargé");
+  }
+  const client = mqtt.connect(BROKER_URL, { username: USER, password: PASS,
+    clientId: "web-parking-" + Math.random().toString(16).slice(2, 10), reconnectPeriod: 3000,
+    connectTimeout: 15000 });
+
+  client.on("connect", () => {
+    etat("broker", "connecté", true);
+    client.subscribe(BASE + "#", { qos: 1 });
+  });
+  client.on("reconnect", () => etat("broker", "reconnexion...", false));
+  client.on("close", () => etat("broker", "déconnecté", false));
+  client.on("error", err => {
+    console.error(err);
+    // rc 4/5 = identifiants refusés ; sinon problème réseau ou URL
+    const refus = /Not authorized|Bad username|code 4|code 5/i.test(err.message);
+    etat("broker", refus ? "identifiants refusés" : "erreur : " + err.message, false);
+  });
+
+  client.on("message", (topic, message) => {
+    const sujet = topic.slice(BASE.length), txt = message.toString();
+    if (sujet === "status") { etat("station", txt, txt === "online"); return; }
+    if (sujet === "cmd") return;
+    if (sujet.startsWith("recus/")) {                // message vide retenu = reçu clôturé
+      const code = sujet.slice(6);
+      if (txt === "") delete recus[code];
+      else try { recus[code] = JSON.parse(txt); } catch (e) {}
+      majRecus(); return;
+    }
+    let d; try { d = JSON.parse(txt); } catch (e) { console.warn("JSON invalide", topic, txt); return; }
+    ({ occupation, acces, securite, stats, alarme, evenement })[sujet]?.(d);
+  });
+
+  function cmd(texte) { client.publish(BASE + "cmd", texte, { qos: 1 }); }
+
+  function envoyerReglages() {
+    const champs = [["inCapacite", "capacite", 1, 200], ["inTarif", "tarif", 0, 100000],
+                    ["inUnite", "unite_s", 1, 86400], ["inSeuilCo", "seuil_co", 31, 300]];
+    for (const [id, nom, min, max] of champs) {
+      const v = Number($(id).value);
+      if (!Number.isInteger(v) || v < min || v > max) {
+        $("erreurReglages").textContent = "Valeur invalide pour " + nom + " (entre " + min + " et " + max + ")"; return;
+      }
+    }
+    $("erreurReglages").textContent = "";
+    champs.forEach(([id, nom]) => cmd(nom + "=" + $(id).value));
+    seuilCo = Number($("inSeuilCo").value);
+  }
+  document.querySelectorAll("input").forEach(i => i.addEventListener("input", () => $("erreurReglages").textContent = ""));
+</script>
+</body>
+</html>
